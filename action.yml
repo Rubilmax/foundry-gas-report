@@ -6,9 +6,6 @@ branding:
   color: purple
 
 inputs:
-  workflowId:
-    description: The workflow's file name or ID.
-    required: true
   token:
     description: The repository's github token.
     default: ${{ github.token }}
@@ -21,6 +18,10 @@ inputs:
     description: The title displayed in the markdown output.
     default: Changes to gas costs
     required: false
+  comment:
+    description: The header used to uniquely identify the summary comment on Pull Requests.
+    default: Gas diff report
+    required: false
   ignore:
     description: The list of paths from which to ignore gas reports, separated by a comma.
     required: false
@@ -31,11 +32,40 @@ inputs:
 outputs:
   shell:
     description: The gas diff between the base gas report and the freshly generated gas report, specifically formatted for shell display
-    value: ${{ steps.random-number-generator.outputs.random-id }}
+    value: ${{ steps.gas_diff.outputs.shell }}
   markdown:
     description: The gas diff between the base gas report and the freshly generated gas report, specifically formatted for markdown display
-    value: ${{ steps.random-number-generator.outputs.random-id }}
+    value: ${{ steps.gas_diff.outputs.markdown }}
 
 runs:
-  using: node16
-  main: dist/index.js
+  using: composite
+  steps:
+    - name: Load reference gas report
+      if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+      uses: actions/cache@v3
+      with:
+        path: ${{ github.event.pull_request.base.sha }}-${{ inputs.report }}
+        key: ${{ github.event.pull_request.base.sha }}
+
+    - name: Cache new gas report
+      uses: actions/cache@v3
+      with:
+        path: ${{ github.sha }}-${{ inputs.report }}
+        key: ${{ github.sha }}
+
+    - name: Rename new gas report for caching
+      run: mv ${{ inputs.report }} ${{ github.sha }}-${{ inputs.report }}
+      shell: bash
+
+    - name: Compare gas reports
+      if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+      run: ./dist/index.js -s ${{ github.event.pull_request.base.sha }}-${{ inputs.report }} ${{ github.sha }}-${{ inputs.report }} -t "${{ inputs.title }}" -i "${{ inputs.ignore }}" -m "${{ inputs.match }}"
+      shell: bash
+      id: gas_diff
+
+    - name: Add gas diff to sticky comment
+      if: inputs.comment != "" && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: ${{ inputs.comment }}
+        message: ${{ steps.gas_diff.outputs.markdown }}
